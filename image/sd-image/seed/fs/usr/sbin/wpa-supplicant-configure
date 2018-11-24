@@ -1,0 +1,41 @@
+#!/bin/bash
+
+BOOT_WPA_CONF=/boot/wpa_supplicant.conf
+BOOT_WPA_CREDS=/boot/wpa_supplicant_cred.txt
+CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+
+hash() {
+  if ! [ -e "$1" ]; then
+    echo ""
+  else
+    md5sum $1 | awk '{print $1}'
+  fi
+}
+
+# always generate a new wpa_supplicant.conf from $BOOT_WPA_CREDS if exists
+if [ -e $BOOT_WPA_CREDS ]; then
+  # make sure to not match windows line endings when capturing value
+  wpa_ssid=$(grep -oP '^wpa_ssid=\K([^]+)' $BOOT_WPA_CREDS)
+  wpa_passphrase=$(grep -oP '^wpa_passphrase=\K([^]+)' $BOOT_WPA_CREDS)
+
+  if [ "$wpa_ssid" != "" ] && [ "$wpa_passphrase" != "" ]; then
+    wpa_passphrase "$wpa_ssid" "$wpa_passphrase" > /tmp/wpa_supplicant.conf-tmp
+  fi
+fi
+
+if [ "$(hash $BOOT_WPA_CONF)" != "$(hash /tmp/wpa_supplicant.conf-tmp)" ]; then
+  mv /tmp/wpa_supplicant.conf-tmp $BOOT_WPA_CONF
+fi
+
+# always update $BOOT_WPA_CONF and set $CONF symlink if $BOOT_WPA_CONF exists
+if [ -e $BOOT_WPA_CONF ]; then
+
+  # set symlink /etc/wpa_supplicant/wpa_supplicant.conf to (possibly) new config in /boot
+  if ! [ -L $CONF ]; then
+    if [ -e $CONF ]; then
+      mv $CONF $CONF.old
+    fi
+
+    ln -s $BOOT_WPA_CONF $CONF
+  fi
+fi

@@ -25,7 +25,9 @@ https://github.com/DT42/BerryNet.git
 
 ## 组成
 
+####  image
 
+基于raspbian的系统生成
 
 ---
 

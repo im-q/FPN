@@ -1,0 +1,224 @@
+#!/bin/bash -e
+
+SOURCE="$(realpath $(dirname ${BASH_SOURCE[0]}))"
+
+MODEL=$1
+
+if [ "$MODEL" == "" ]; then
+  2&>1 "Ensure you have provided an arg specifying the image model"
+  exit 1
+fi
+
+DT=$(date +%s)
+STAMP=$(echo $(date -d @${DT} +%F_%T) | awk -F ':' '{print $1""$2}')
+
+IMAGE="2017-04-10-raspbian-jessie-lite.img"
+URL="https://downloads.raspberrypi.org/raspbian_lite/images/raspbian_lite-2017-04-10/$(basename "$IMAGE" .img).zip"
+
+WORK_DIR=$2
+
+if ! [ -d "$WORK_DIR" ]; then
+  2>&1 "Unspecified or unusable work directory ($WORK_DIR), bailing"
+  exit 1
+fi
+
+WORK="$WORK_DIR"/sd-image
+MOUNT="$WORK_DIR"/sd-image-mount
+MOUNT_BOOT="$WORK_DIR"/sd-image-mount-boot
+TMPPKG="$MOUNT"/tmp/package
+
+# these should cover creating all dirs above
+mkdir -p "$WORK"
+mkdir -p "$TMPPKG"
+mkdir -p "$MOUNT_BOOT"
+
+OUTDIR=$3
+
+if ! [ -e "$OUTDIR" ]; then
+  2&> "Cannot write to $OUTDIR; expecting arg specifying outdir"
+  exit 2
+fi
+
+OUTIMG=$OUTDIR/horizon-raspbian-$MODEL-$STAMP.img
+TMPOUTIMG=$WORK/horizon-raspbian-$MODEL.img
+
+cd "$WORK"
+if ! [ -e "$IMAGE" ]; then
+  wget $URL; unzip $(basename "$IMAGE" .img).zip
+fi
+
+rm -f $TMPOUTIMG; cp $IMAGE $TMPOUTIMG
+
+loopdev() {
+  # need to use realpath to ensure output from losetup matches the path given, even if it's a symlink
+  losetup -l | grep $(realpath "$TMPOUTIMG") | awk '{print $1}'
+}
+
+looppart() {
+  echo "$(echo "$1" | grep -oP '\/dev\/\K\w+')${2}"
+}
+
+CHROOT_ERR=0
+
+# purposefully leaves around intermediate build files
+finish() {
+  sync
+
+  USED_ROOT=$(df -B1 "$MOUNT" | awk 'NR>1{print $3}')
+
+  # the padding here is important, it includes the journal size (16MB) and gives the user some root space for initial boot stuff. Also note that the inode count can be exceeded before space itself, getting that right is a matter of the filesystem call below
+  SMALLER_ROOT=$((USED_ROOT+(128*1024*1024)))
+
+  umount "$MOUNT_BOOT"
+  umount "$MOUNT"/dev/pts
+  umount "$MOUNT"/dev
+  umount "$MOUNT"/sys "$MOUNT"/proc
+
+  FINISH_ERR=0
+
+  if [ "$CHROOT_ERR" == 0 ]; then
+    tar -cpf $WORK/root_smaller.tar --one-file-system -C $MOUNT .
+  fi
+
+  # done w/ this mounted vol we can unmount it now
+  umount "$MOUNT"
+
+  if [ "$CHROOT_ERR" == 0 ]; then
+    echo "used root: $USED_ROOT"
+
+    parted -s $LOOP_DEV rm 2
+    parted -s $LOOP_DEV mkpart primary $(($(parted -s $LOOP_DEV unit s print | grep -Po '1\s+\d+s\s+\K(\d+)')+1))s $(($(parted -s $LOOP_DEV unit b print | grep -Po '1\s+\d+B\s+\K(\d+)')+SMALLER_ROOT))B
+    kpartx -uf $LOOP_DEV
+
+    parted -s $LOOP_DEV unit b print
+
+    FINISH_ERR=$?
+
+    echo "$WORK, $LOOP_ROOT_PARTITION"
+
+    mkfs.ext4 -F -i 12288 -I 512 -b 1024 -O dir_index,sparse_super,extents -L horizon-ROOT /dev/mapper/"$LOOP_ROOT_PARTITION"
+    mount -o loop /dev/mapper/"$LOOP_ROOT_PARTITION" "$MOUNT"
+    tar -xpf $WORK/root_smaller.tar -C $MOUNT
+    umount "$MOUNT"
+
+    echo "Consistency check partitions"
+    e2fsck -fy /dev/mapper/"$LOOP_ROOT_PARTITION" || :
+
+    sync
+  fi
+
+  # ensure boot partition has label
+  fatlabel /dev/mapper/$LOOP_BOOT_PARTITION "BOOT"
+
+  END_ROOT_B=$(parted -s $LOOP_DEV unit b print | grep -Po '2\s+\d+B\s+\K(\d+)')
+
+  echo "Removing $LOOP_DEV..."
+  losetup -d "$LOOP_DEV"
+  kpartx -d "$LOOP_DEV" 2> /dev/null
+  while [ "$?" != 0 ]; do
+    kpartx -d "$LOOP_DEV" 2> /dev/null
+  done
+
+  if [ "$CHROOT_ERR" == 0 ]; then
+
+    SIZE=$((END_ROOT_B + $((32*1024*1024))))
+    NEW_END=$(($SIZE + (1024-$SIZE%1024)))
+    echo "$SIZE, $NEW_END"
+    dd if=/dev/null of=$TMPOUTIMG bs=1 count=0 seek=$NEW_END
+
+    echo "Finished building image, moving to provided output dir"
+    mv $TMPOUTIMG $OUTIMG
+  fi
+
+  if [ "$CHROOT_ERR" != 0 ]; then
+    2>&1 "Error in chroot: $CHROOT_ERR"
+    exit $CHROOT_ERR
+  elif [ "$FINISH_ERR" != 0 ]; then
+    2>&1 "Error finishing image: $FINISH_ERR"
+    exit $FINISH_ERR
+  else
+    exit 0
+  fi
+}
+
+trap finish INT TERM EXIT
+
+# grow image by 500MB for installation
+dd if=/dev/zero bs=1M count=512 >> "$TMPOUTIMG"
+
+LOOP_DEV="$( loopdev )"
+TRIES=0
+until [ "$LOOP_DEV" != "" ]; do
+  echo "Adding partition mappings for image"
+  kpartx -af "$TMPOUTIMG"
+  LOOP_DEV="$( loopdev )"
+  sleep 2
+
+  TRIES=$(($TRIES+1))
+  if [ "$TRIES" -gt 4 ]; then
+    exit 2
+  fi
+done
+
+LOOP_BOOT_PARTITION="$( looppart $LOOP_DEV p1 )"
+LOOP_ROOT_PARTITION="$( looppart $LOOP_DEV p2 )"
+
+# grow root partition and fs
+parted -s /dev/mapper/"$LOOP_ROOT_PARTITION" rm 2
+parted -s /dev/mapper/"$LOOP_ROOT_PARTITION" mkpart primary ext4 0% 100%
+
+kpartx -u "$TMPOUTIMG"
+
+e2fsck -fy /dev/mapper/"$LOOP_ROOT_PARTITION"
+resize2fs /dev/mapper/"$LOOP_ROOT_PARTITION"
+
+EX=$(mount | grep -q "$MOUNT" || :)
+if [ "$EX" == "" ]; then
+  mkdir "$MOUNT" > /dev/null 2>&1
+  echo "mounting /dev/mapper/$LOOP_ROOT_PARTITION"
+  mount -o loop /dev/mapper/"$LOOP_ROOT_PARTITION" "$MOUNT"
+
+  # a trick: copying $LOOP_BOOT_PARTITION content into $LOOP_ROOT_PARTITION/boot so that chrooted kernel upgrades will succeed on ext4 fs. Need to copy those back out to $LOOP_BOOT_PARTITION later and wipe $LOOP_ROOT_PARTITION/boot
+  mount -o loop /dev/mapper/"$LOOP_BOOT_PARTITION" "$MOUNT_BOOT"
+  cp -vrLp "$MOUNT_BOOT"/* "$MOUNT"/boot/
+else
+  2>&1 "$MOUNT not mounted, cannot continue"
+  exit 1
+fi
+
+echo "mounts: $(mount | grep "$MOUNT")"
+
+# copy canned seed files from project source (they are distributed inside the chroot env, this just gets them into that FS)
+mkdir -p "$MOUNT"/seed/
+cp -vfda --no-preserve=ownership "$SOURCE"/seed/* "$MOUNT"/seed/
+chown -R root:root "$MOUNT"/seed/fs
+cp -vfda "$MOUNT"/seed/fs/. "$MOUNT"/
+
+mount -t proc none "$MOUNT"/proc
+mount -o bind /dev "$MOUNT"/dev
+mkdir -p "$MOUNT"/dev/pts
+mount devpts "$MOUNT"/dev/pts -t devpts
+mount -o bind /sys "$MOUNT"/sys
+cp --remove-destination /etc/resolv.conf "$MOUNT"/etc/
+
+chroot "$MOUNT" /bin/bash -c "/seed/setup $MODEL"
+CHROOT_ERR=$?
+
+rm -Rf $TMPPKG
+rm "$MOUNT"/etc/resolv.conf
+rm -f "$MOUNT"/etc/ssh/ssh_host_*key*
+
+mkdir -p "$MOUNT"/var/horizon/
+echo "$STAMP" > "$MOUNT"/var/horizon/image_version
+
+# copy boot files back to boot partition; hose boot files on root fs
+rm -Rf "$MOUNT_BOOT"/*
+cp -vrLp "$MOUNT"/boot/* "$MOUNT_BOOT"/
+rm -Rf "$MOUNT"/boot/*
+
+# write our fstab which uses labels
+cat <<EOF > "$MOUNT"/etc/fstab
+proc                /proc           proc            defaults            0 0
+/dev/mmcblk0p1      /boot           vfat            defaults            0 2
+/dev/mmcblk0p2      /               ext4            defaults,noatime    0 1
+EOF

@@ -1,0 +1,127 @@
+#!/bin/bash
+
+set -e
+set -x
+
+if [ "$1" == "" ]; then
+  2>&1 "Unspecified model, bailing"
+  exit 1
+fi
+
+LANGUAGE="en_US.UTF-8"
+
+export DEBIAN_FRONTEND="noninteractive"
+export LANG=C
+
+# Set locale
+echo -e "LANG=C" >> /etc/environment
+
+cat << EOF | debconf-set-selections
+locales   locales/locales_to_be_generated multiselect     en_US.UTF-8 UTF-8
+EOF
+
+rm /etc/locale.gen
+dpkg-reconfigure -f noninteractive locales
+update-locale LANG=C
+
+cat << EOF | debconf-set-selections
+locales   locales/default_environment_locale select       en_US.UTF-8
+EOF
+
+echo 'Reconfigured locale' >> /dev/kmsg
+
+#change hostname
+TMP_HOSTNAME="horizon-config-device"
+
+# workaround for services starting at install time (in chroot so this doesn't work)
+echo exit 101 > /usr/sbin/policy-rc.d
+chmod +x /usr/sbin/policy-rc.d
+
+# N.B.: the net.ifnames setting ensures names like wlan0, etc.; this is necessary for the systemd-networkd and udev configs in the seed/fs to work
+# last console is only one shown init and console in single-user mode. this is HDMI
+if [ "$1" == "pi2" ]; then
+  echo "dwc_otg.lpm_enable=0 kgdboc=ttyAMA0,115200 console=ttyAMA0,115200 console=tty1 consoleblank=0 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline rootwait" > /boot/cmdline.txt
+elif [ "$1" == "pi3" ]; then
+  echo "dwc_otg.lpm_enable=0 kgdboc=ttyS0,115200 console=ttyS0,115200 console=tty1 consoleblank=0 root=/dev/mmcblk0p2 rootfstype=ext4 elevator=deadline rootwait" > /boot/cmdline.txt
+
+  echo -e "\nenable_uart=1" >> /boot/config.txt
+else
+  2>&1 "Unknown model, $1"
+  exit 1
+fi
+
+sed -i 's/#kernel.printk = 3 4 1 3/kernel.printk = 3 4 1 3/' /etc/sysctl.conf
+
+sed -i 's/^PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+apt-get update && apt-get install -o Dpkg::Options::="--force-confold" -y htop iftop iotop jq screen bridge-utils rsyslog logrotate crda iw wireless-tools wpasupplicant wireless-regdb curl iptables gettext vnstat software-properties-common python-software-properties
+
+echo "$TMP_HOSTNAME" > /etc/hostname
+sed "/127.0.1.1/d" -i /etc/hosts
+
+wget http://1dd40.http.tor01.cdn.softlayer.net/fauxcon/fauxcon-armhf-0.1.0 -O /usr/bin/fauxcon && chmod +x /usr/bin/fauxcon
+
+wget http://1dd40.http.tor01.cdn.softlayer.net/ip-out/ip-out-armv7l-0.2.0 -O /usr/bin/ip-out && chmod +x /usr/bin/ip-out
+
+# install docker
+curl https://get.docker.com/ | bash
+
+systemctl enable docker
+systemctl enable ssh
+
+systemctl enable horizon-configure
+systemctl enable horizon-install
+systemctl enable ip-out-console
+systemctl enable wpa_supplicant-configure
+
+# TODO: do more safe editing of this to prep for distros using it
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "log-driver": "syslog",
+  "storage-driver": "overlay"
+}
+EOF
+
+echo -e "fs.file-max = 110000\n" >> /etc/sysctl.conf
+
+sed -i 's,PermitRootLogin without-password,PermitRootLogin yes,g' /etc/ssh/sshd_config
+sed -i 's,X11Forwarding yes,X11Forwarding no,g' /etc/ssh/sshd_config
+
+apt-get -y purge nano
+
+update-rc.d apply_noobs_os_config remove
+update-rc.d resize2fs_once remove
+update-rc.d rc.local remove
+update-rc.d triggerhappy remove
+
+chmod a-x /etc/rc.local
+
+rm -Rf /seed
+
+# hose workaround for services starting
+rm /usr/sbin/policy-rc.d
+
+# fix that bullshit iface renaming
+ln -s /dev/null /etc/udev/rules.d/80-net-setup-link.rules
+
+# create override dirs in /boot; TODO: add instructions in those dirs to help people use them
+mkdir -p /boot/horizon-cfg/etc/{horizon/,default/,apt/sources.list.d/}
+mkdir -p /boot/horizon-cfg/usr/horizon/bin
+
+# remove stuff that takes up space
+mv /var/cache/apt/archives /tmp/
+rm -rf /var/cache/*
+mkdir -p /var/cache/apt/ && mv /tmp/archives /var/cache/apt/
+
+yes "horizon" | passwd root
+passwd -u root
+
+userdel -r pi
+
+echo "-----------------------------------------------"
+echo "   image chroot setup completed successfully"
+echo "-----------------------------------------------"
+
+sync

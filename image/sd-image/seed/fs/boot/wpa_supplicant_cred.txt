@@ -1,0 +1,16 @@
+#
+# wpa_supplicant_cred.txt
+#
+# This file can be used to automatically generate a
+# horizon-boot/wpa_supplicant.conf file on boot. If this file exists and
+# specifies credentials, it will overwrite the mentioned configuration file.
+# If you prefer not to use the content of this file to configure your WIFI
+# adapter, leave the credential lines below with empty values, comment the
+# lines out, or delete this file. You can then author the config file
+# horizon-boot/wpa_supplicant.conf yourself and the boot process with use it.
+#
+# Note: below values should be specified without quoting delimiters like ' or "
+#
+
+wpa_ssid=
+wpa_passphrase=

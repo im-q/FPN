@@ -1,0 +1,15 @@
+[Unit]
+Description=horizon install service
+Requires=snapd.service
+Before=multi-user.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/horizon-install
+RemainAfterExit=yes
+StandardOutput=tty
+StandardError=tty
+
+[Install]
+WantedBy=default.target

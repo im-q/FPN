@@ -1,0 +1,19 @@
+#!/bin/bash
+
+if [ "$#" != 1 ] || ! [[ "$1" == *":"* ]]; then
+  exit 1
+fi
+
+docker images --format="{{.Repository}}:{{.Tag}}" | grep -q "$1" 2> /dev/null
+
+# try downloading if image does not exist in local repo
+
+if [ "$?" != 0 ]; then
+  echo "Couldn't find $1 locally, attempting to pull from repo"
+  docker pull $1
+
+  if [ "$?" != 0 ]; then
+    echo "Failed to find $1 locally or remotely"
+    exit 1
+  fi
+fi

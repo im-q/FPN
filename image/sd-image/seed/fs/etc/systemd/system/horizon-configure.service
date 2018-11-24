@@ -1,0 +1,12 @@
+[Unit]
+Description=horizon configure service
+Requires=sysinit.target
+After=local-fs.target
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/horizon-configure
+
+[Install]
+WantedBy=local-fs.target

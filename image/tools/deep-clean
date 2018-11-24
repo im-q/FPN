@@ -1,0 +1,10 @@
+#!/bin/bash -e
+
+if [[ $# -ne 1 || "${1}" -ne "CLEAN" ]]; then
+  >&2 echo "Error, required arg with appropriate value not provided"
+  echo -e "\n**DESTRUCTIVE**: Hoses all project artifacts not in git index. Usage:\n${0} CLEAN"
+  exit 1
+else
+  git reset --hard HEAD
+  git clean -df
+fi
