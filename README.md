@@ -1,35 +1,29 @@
-﻿
-# [Raspberry Pi](https://github.com/tfzoo/RPi) 
+﻿# [FPN](https://github.com/tfzoo/FPN)
 
-运行于树莓派上的tensorflow
+[![sites](http://182.61.61.133/link/resources/qitas.png)](http://www.tfzoo.com)
 
-[![sites](tfzoo/tfzoo.png)](http://www.mcuyun.com)
+### 特征金字塔(Feature Pyramid Networks)
 
+识别尺寸差异很大的物体是计算机视觉所面临的基本挑战之一,利用深度卷积神经网络固有的多尺度金字塔结构来以极小的计算量构建特征金字塔的网络结构。
 
-#### 更多关于：[tensorflow zoo](https://github.com/tensorflow/tensorflow.git)可访问 www.tfzoo.com
+这种方法的优点有：
 
----
+* 对每一种尺度的图像进行特征提取，能够产生多尺度的特征表示，并且所有等级的特征图都具有较强的语义信息，甚至包括一些高分辨率的特征图。
 
-## 简介
+这种方法的缺点有：
 
+* 推理时间大幅度增加；
+* 由于内存占用巨大，用图像金字塔的形式训练一个端到端的深度神经网络变得不可行；
+* 如果只在测试阶段使用图像金字塔，那么会造成一个问题：由于训练时，网络只是针对于某一个特点的分辨率进行训练，推理时运用图像金字塔，可能会在训练与推理时产生“矛盾”。
 
+利用单个高层特征图进行预测：例如Faster R-CNN中的RPN层就是利用单个高层特征图进行物体的分类和bounding box的回归。
 
-https://github.com/romilly/rpi-docker-tensorflow.git
-
-https://github.com/lhelontra/tensorflow-on-arm.git
-
-https://github.com/DT42/BerryNet.git
-
-
----
-
-## 组成
-
-####  image
-
-基于raspbian的系统生成
+SSD为了避免使用低层特征图，放弃了重用已经计算的层，而是从网络的高层开始构建金字塔（例如，VGG网络的Conv4之后，再添加几个新的卷积层），因此，SSD错过了重用低层高分辨的特征图，即没有充分利用到低层特征图中的空间信息(这些信息对小物体的检测十分重要)。
 
 ---
 
-###  www.tfzoo.com  |   qitas@qitas.cn
+为了解决以上三种结构的不足之处，这篇论文提出了FPN，即使每一层不同尺度的特征图都具有较强的语义信息。
 
+这种网络结构，能够在增加较少计算量的前提下融合低分辨率语义信息较强的特征图和高分辨率语义信息较弱但空间信息丰富的特征图。
+
+其实在这篇论文之前，也有人提到得出一张既具有高分辨率又具有较强语义信息的特征图进行预测，但FPN的独特之处在于，它是在以特征金字塔为基础结构上，对每一层级的特征图分别进行预测。
